@@ -226,7 +226,7 @@ class CheckHttp < Sensu::Plugin::Check::CLI
   option :response_code,
          long: '--response-code REGEX',
          description: 'Critical if HTTP response code does not match REGEX',
-         default: '^2([0-9]{2})$'
+         default: '^(2|3)([0-9]{2})$'
 
   option :proxy_url,
          long: '--proxy-url PROXY_URL',
@@ -392,14 +392,7 @@ class CheckHttp < Sensu::Plugin::Check::CLI
   end
 
   def safe_redirect_regex?
-    regex = config[:response_code]
-    # if we have a negative assertion its not safe
-    # if we have a regex that does not include a string that looks like a regex
-    # => that would match a 3xx response. This logic is super weak and likely
-    # => will push me to remove regexp support either fully or only supporting
-    # => some basic/partial matching only.
-    return false if regex.include?('?!') || !regex.include?('30') || !regex.include?('3([0-9]{2})')
-    true
+    (300..399).any? { |code| /#{config[:response_code]}/ =~ code.to_s }
   end
 
   def handle_2xx(res, size, body)
@@ -424,43 +417,37 @@ class CheckHttp < Sensu::Plugin::Check::CLI
         critical "#{res.code}, checksum did not match #{config[:sha256checksum]} in #{size} bytes: #{res.body[0...200]}..."
       end
     else
-      ok("#{res.code}, #{size} bytes" + body) unless config[:response_code]
+      ok("#{res.code}, #{size} bytes" + body)
     end
   end
 
   def handle_3xx(res)
-    if !config[:redirectto].nil? && config[:redirectto] == res['Location'] && res.code =~ /#{config[:response_code]}/
+    if !config[:redirectto].nil? && config[:redirectto] == res['Location']
       ok "#{res.code}, config[:redirectto] matches redirect location of #{res['Location']}"
     elsif !config[:redirectto].nil? && config[:redirectto] != res['Location']
       critical "status code: #{res.code}. The redirect location specified in the check: #{config[:redirectto]} did not match the redirect location: #{res['Location']}" # rubocop:disable Metrics/LineLength
     # TODO: this is for backwards compatibility and should be removed after we remove that option which we are deprecating
-    elsif res.code =~ /#{config[:response_code]}/ && safe_redirect_regex?
+    elsif safe_redirect_regex?
       ok "#{res.code} matched /#{config[:response_code]}/"
     else
-      critical "#{res.code} did not match /#{config[:response_code]}/"
+      warning "Unexpected redirect with code #{res.code}"
     end
   end
 
   def handle_response(res, size, body)
-    unknown 'specify a response code that is not empty/nil' if config[:response_code].nil? || config[:response_code].empty?
+    if config[:response_code].nil? || config[:response_code].empty?
+      unknown 'specify a response code that is not empty/nil'
+    elsif res.code !~ /#{config[:response_code]}/
+      critical "#{res.code}, #{body}"
+    end
+
     case res.code
     when /^2[0-9]{2}$/
       handle_2xx(res, size, body)
     when /^3[0-9]{2}$/
       handle_3xx(res)
-    # with 4XX and 4XX response codes we only inspect the desired response code
-    # should we decide to add more logic checks we should break out into functions
-    when /^4[0-9]{2}$/, /^5[0-9]{2}$/
-      critical "#{res.code}, #{body}" if config[:response_code] =~ /#{config[:response_code]}/
-    # handle any non standard HTTP codes
+    # handle all other and non standard HTTP codes
     else
-      # bail with an error if ALL of the following are true:
-      # - its a non standard HTTP response code
-      # - its not intentionally set empty
-      # - does not match the regex you have specified
-      critical "#{res.code}, #{body}" if res.code !~ /#{config[:response_code]}/
-      # if those do not match then it implicitly means you sent a non standard HTTP
-      # status code but got the response back that you expected.
       ok "#{res.code}, #{size} bytes, body: #{body}"
     end
   end
