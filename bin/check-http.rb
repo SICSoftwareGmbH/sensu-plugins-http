@@ -396,7 +396,7 @@ class CheckHttp < Sensu::Plugin::Check::CLI
   end
 
   def handle_2xx(res, size, body)
-    if config[:redirectto]
+    if !config[:redirectto].nil? && !config[:redirectto].empty?
       critical "Expected redirect to #{config[:redirectto]} but got #{res.code}" + body
     elsif config[:pattern]
       if res.body =~ /#{config[:pattern]}/
